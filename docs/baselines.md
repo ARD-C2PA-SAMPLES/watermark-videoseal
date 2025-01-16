@@ -45,6 +45,6 @@ To download the baselines, you can use the following code:
 pip install huggingface_hub
 huggingface-cli download tangtianzhong/img-wm-torchscript --cache-dir .cache
 mkdir ckpts
-mv .cache/models--tangtianzhong--img-wm-torchscript/snapshots/845dc751783db2a03a4b14ea600b0a4a9aba89aa/*.pt ckpts/
+find .cache/models--tangtianzhong--img-wm-torchscript/snapshots/845dc751783db2a03a4b14ea600b0a4a9aba89aa -type l -exec cp --dereference {} ckpts/ \;
 rm -rf .cache
 ```

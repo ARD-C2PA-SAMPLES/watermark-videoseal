@@ -8,20 +8,16 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
 
 import omegaconf
 import torch
 import torchvision.transforms as transforms
 from omegaconf import DictConfig, OmegaConf
 
-from videoseal.augmentation import get_validation_augs
 from videoseal.augmentation.augmenter import get_dummy_augmenter
-from videoseal.data.datasets import (CocoImageIDWrapper, ImageFolder,
-                                     VideoDataset)
+from videoseal.data.datasets import CocoImageIDWrapper, ImageFolder, VideoDataset
 from videoseal.models import Videoseal, build_embedder, build_extractor, build_baseline
 from videoseal.modules.jnd import JND
-from videoseal.utils.data import Modalities, parse_dataset_params
 
 omegaconf.OmegaConf.register_new_resolver("mul", lambda x, y: x * y)
 omegaconf.OmegaConf.register_new_resolver("add", lambda x, y: x + y)
@@ -142,7 +138,10 @@ def setup_model_from_checkpoint(ckpt_path: str) -> Videoseal:
     if "baseline" in ckpt_path:
         method = ckpt_path.split('/')[-1]
         return build_baseline(method)
-    # load videoseal checkpoints
+    # load videoseal model card
+    elif ckpt_path.startswith('videoseal'):
+        return setup_model_from_model_card(ckpt_path)
+    # load from checkpoint
     else:
         config = get_config_from_checkpoint(ckpt_path)
         return setup_model(config, ckpt_path)

@@ -176,7 +176,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Process a video with Video Seal")
     parser.add_argument("--input", type=str, help="Input video path")
-    parser.add_argument("--output_dir", type=str, help="Output directory")
+    parser.add_argument("--output_dir", type=str, help="Output directory", default="outputs")
     parser.add_argument("--do_audio", type=utils.bool_inst, default=False)
     args = parser.parse_args()
 

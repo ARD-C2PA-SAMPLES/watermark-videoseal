@@ -419,7 +419,6 @@ def main(params):
         dummy_img)  # n 1 h w, full of ones or random masks depending on config
 
     # evaluation only
-    # TODO: test me
     if params.only_eval and udist.is_main_process():
         # get data loaders
         val_loaders = ((Modalities.IMAGE, image_val_loader),

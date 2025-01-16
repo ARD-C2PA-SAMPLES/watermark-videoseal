@@ -68,7 +68,7 @@ class Videoseal(Wam):
             blending_method=blending_method
         )
         # video settings
-        self.chunk_size = chunk_size  # embed 8 frames/imgs at a time
+        self.chunk_size = chunk_size  # encode 8 frames/imgs at a time
         self.step_size = step_size  # propagate the wm to 4 next frame/img
 
     def forward(
@@ -150,7 +150,13 @@ class Videoseal(Wam):
             preds_w = self.video_embedder(self.rgb2yuv(imgs)[:, 0:1], msgs)
         else:
             preds_w = self.video_embedder(imgs, msgs)
-        imgs_w = self.blend(imgs, preds_w)  # frames c h w
+        imgs_w = self.blender(imgs, preds_w)  # frames c h w
+        # apply attenuation and clamp
+        if self.attenuation is not None:
+            self.attenuation.to(imgs.device)
+            imgs_w = self.attenuation(imgs, imgs_w)
+        if self.clamp:
+            imgs_w = torch.clamp(imgs_w, 0, 1)
         # augment
         imgs_aug, masks, selected_aug = self.augmenter(
             imgs_w, imgs, masks, is_video=True)
@@ -174,6 +180,7 @@ class Videoseal(Wam):
         imgs: torch.Tensor,
         msgs: torch.Tensor = None,
         is_video: bool = True,
+        interpolation: dict = {"mode": "bilinear", "align_corners": False, "antialias": True},
     ) -> dict:
         """ 
         Generates watermarked videos from the input images and messages (used for inference).
@@ -210,7 +217,7 @@ class Videoseal(Wam):
                 msgs = msgs[:nimgs_in_ck]
 
             # get deltas for the chunk, and repeat them for each frame in the chunk
-            outputs = super().embed(imgs_in_ck, msgs)  # n 3 h w
+            outputs = super().embed(imgs_in_ck, msgs, interpolation)  # n 3 h w
             deltas_in_ck = outputs["preds_w"]  # n 3 h w
             deltas_in_ck = torch.repeat_interleave(
                 deltas_in_ck, step_size, dim=0)  # f 3 h w
@@ -218,8 +225,15 @@ class Videoseal(Wam):
             # at the end of video there might be more deltas than needed
             deltas_in_ck = deltas_in_ck[:len(all_imgs_in_ck)]
 
+            # blend, apply attenuation and clamp
+            all_imgs_in_ck_w = self.blender(all_imgs_in_ck, deltas_in_ck)
+            if self.attenuation is not None:
+                self.attenuation.to(all_imgs_in_ck.device)  # on cpu because high res
+                all_imgs_in_ck_w = self.attenuation(all_imgs_in_ck, all_imgs_in_ck_w)
+            if self.clamp:
+                all_imgs_in_ck_w = torch.clamp(all_imgs_in_ck_w, 0, 1)
+
             # create watermarked imgs
-            all_imgs_in_ck_w = self.blend(all_imgs_in_ck, deltas_in_ck)
             imgs_w[start: end, ...] = all_imgs_in_ck_w  # n 3 h w
 
         outputs = {
@@ -233,14 +247,14 @@ class Videoseal(Wam):
         self,
         imgs: torch.Tensor,
         is_video: bool = True,
+        interpolation: dict = {"mode": "bilinear", "align_corners": False, "antialias": True},
     ) -> dict:
         """
         Performs the forward pass of the detector only.
         Rescales the input images to 256x... pixels and then computes the mask and the message.
         Args:
             imgs (torch.Tensor): Batched images with shape FxCxHxW, where F is the number of frames,
-                                    C is the number of channels, H is the height, and W is the width. 
-                                    if shape CxHxW is passed automatically will be considered as img
+                                    C is the number of channels, H is the height, and W is the width.
         Returns:
             dict: The output predictions.
                 - torch.Tensor: Predictions for each frame with shape Fx(K+1),
@@ -248,14 +262,15 @@ class Videoseal(Wam):
                                 the probability of the detection bit, and the remaining columns represent
                                 the probabilities of each bit in the message.
         """
-        if not is_video or len(imgs.shape) == 3:
+        if not is_video:
             # fallback on parent class for batch of images
             return super().detect(imgs)
         all_preds = []
         for ii in range(0, len(imgs), self.chunk_size):
             nimgs_in_ck = min(self.chunk_size, len(imgs) - ii)
             outputs = super().detect(
-                imgs[ii:ii+nimgs_in_ck]
+                imgs[ii:ii+nimgs_in_ck], 
+                interpolation
             )
             preds = outputs["preds"]
             all_preds.append(preds)  # n k ..
@@ -268,7 +283,8 @@ class Videoseal(Wam):
     def extract_message(
         self,
         imgs: torch.Tensor,
-        aggregation: str = "avg"
+        aggregation: str = "avg",
+        interpolation: dict = {"mode": "bilinear", "align_corners": False, "antialias": True},
     ) -> torch.Tensor:
         """
         Detects the message in a video and aggregates the predictions across frames.
@@ -278,20 +294,28 @@ class Videoseal(Wam):
             imgs (torch.Tensor): Batched images with shape FxCxHxW, where F is the number of frames,
                     C is the number of channels, H is the height, and W is the width.
             aggregation (str, optional): Aggregation method. Can be one of "avg",
-                "squared_avg", etc. or None. Defaults to "avg".
+                "weighted_avg", or None. Defaults to "avg".
         Returns:
-            torch.Tensor: Aggregated binary message with shape k,
-                where k is the length of the message.
+            torch.Tensor: Aggregated binary message with shape K,
+                where K is the length of the message.
         Note:
             If aggregation is None, returns the predictions for each frame without aggregation.
         """
-        outputs = self.detect(imgs, is_video=True)
+        outputs = self.detect(imgs, is_video=True, interpolation=interpolation)
         preds = outputs["preds"]
         mask_preds = preds[:, 0:1]  # binary detection bit (not used for now)
         bit_preds = preds[:, 1:]  # f k .., must <0 for bit 0 and >0 for bit 1
         if aggregation is None:
             decoded_msg = bit_preds
         elif aggregation == "avg":
-            decoded_msg = bit_preds.mean(dim=0)  # f k -> k
+            decoded_msg = bit_preds.mean(dim=0)
+        elif aggregation == "squared_avg":
+            decoded_msg = (bit_preds * bit_preds.abs()).mean(dim=0)  # f k -> k
+        elif aggregation == "l1norm_avg":
+            frame_weights = torch.norm(bit_preds, p=1, dim=1).unsqueeze(1)  # f 1
+            decoded_msg = (bit_preds * frame_weights).mean(dim=0)  # f k -> k
+        elif aggregation == "l2norm_avg":
+            frame_weights = torch.norm(bit_preds, p=2, dim=1).unsqueeze(1)  # f 1
+            decoded_msg = (bit_preds * frame_weights).mean(dim=0)
         msg = (decoded_msg > 0).squeeze().unsqueeze(0).to(int)  # 1 k
         return msg

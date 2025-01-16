@@ -100,6 +100,13 @@ We provide a guide on how to check and install VMAF at [docs/vmaf.md](docs/vmaf.
 To watermark both audio and video from a video file.
 It loads the full video in memory, so it is not suitable for long videos.
 
+Example:
+```bash
+python inference_av.py --input assets/videos/1.mp4 --output_dir outputs/
+python inference_av.py --detect --input outputs/1.mp4
+```
+
+
 ### Streaming embedding and extraction
 
 [`inference_streaming.py`](inference_streaming.py) 
