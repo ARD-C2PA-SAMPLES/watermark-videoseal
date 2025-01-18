@@ -14,7 +14,6 @@ import numpy as np
 import subprocess
 import torch  
 import tqdm
-import struct
 
 import videoseal
 from videoseal.models import Videoseal
@@ -36,7 +35,7 @@ def embed_video(
     input_path: str,
     output_path: str,
     chunk_size: int,
-    crf: int = 17
+    crf: int = 23
 ) -> None:
     # Read video dimensions
     probe = ffmpeg.probe(input_path)
@@ -64,22 +63,6 @@ def embed_video(
     )
     
     # Create a random message
-    ascii_string = "HelloWorldxx"  # Replace with your desired 12-character string
-    # Step 2: Convert the string to bytes
-    data = ascii_string.encode('ascii')  # Each character becomes one byte (8 bits)
-    # Step 3: Convert each byte into its binary representation and collect the bits
-    bit_array = []
-    bit_array_f = []
-    for byte in data:
-        # Convert byte to binary, remove the "0b" prefix, and pad with zeros to 8 bits
-        bits = bin(byte)[2:].zfill(8)
-        # Append each bit (as an integer) to the bit array
-        bit_array.extend(int(bit) for bit in bits)
-    bit_array_f.append(bit_array)
-    print(bit_array_f)
-    #msgs = torch.tensor(bit_array_f) 
-    #msgs = torch.tensor([[0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]]) 
-    
     msgs = model.get_random_msg()
     with open(output_path.replace(".mp4", ".txt"), "w") as f:
         f.write("".join([str(msg.item()) for msg in msgs[0]]))
@@ -155,10 +138,16 @@ def detect_video(
             soft_msgs.append(detect_video_clip(model, chunk))
     process1.stdout.close()
     process1.wait()
-
+    
     soft_msgs = torch.cat(soft_msgs, dim=0)
-    soft_msgs = soft_msgs.mean(dim=0)  # Average the predictions across all frames
-    return soft_msgs
+    msgs_v_avg = soft_msgs.mean(dim=0)  # Average the predictions across all frames
+    soft_msgs = (soft_msgs > 0).to(int)
+    msgs_v_avg = (msgs_v_avg > 0).to(int)
+
+    #soft_msgs = torch.cat(soft_msgs, dim=0)
+    #soft_msgs = soft_msgs.mean(dim=0)  # Average the predictions across all frames
+    #return soft_msgs
+    return msgs_v_avg
 
 
 def main(args):
@@ -170,23 +159,45 @@ def main(args):
     video_model.compile()
 
     # Create the output directory and path
-    os.makedirs(args.output_dir, exist_ok=True)
-    args.output = os.path.join(args.output_dir, os.path.basename(args.input))
+    #os.makedirs(args.output_dir, exist_ok=True)
+    #args.output = os.path.join(args.output_dir, os.path.basename(args.input))
 
     # Embed the video
-    msgs_ori = embed_video(video_model, args.input, args.output, 1)
-    print(f"Saved watermarked video to {args.output}")
+    #msgs_ori = embed_video(video_model, args.input, args.output, 16)
+    #print(f"Saved watermarked video to {args.output}")
 
     # Detect the watermark in the video
-    #soft_msgs = detect_video(video_model, args.output, 16)
+    soft_msgs = detect_video(video_model, args.input, 1)
     #bit_acc = bit_accuracy(soft_msgs, msgs_ori).item() * 100
     #print(f"Binary message extracted with {bit_acc:.1f}% bit accuracy")
     #print(*soft_msgs)
 
+    rep_msgs = [] 
 
-    if args.do_audio:
-        pass
+    for index, value in enumerate(soft_msgs):
+        rep_msgs.append(value.float().item())
 
+    #print(*rep_msgs)
+    binary_normalized = normalize_binary(rep_msgs)
+    print(binary_normalized)
+
+    result = binary_to_ascii(binary_normalized)
+    print(result)
+
+
+
+def normalize_binary(numbers):
+    min_val = min(numbers)
+    max_val = max(numbers)
+    threshold = (min_val + max_val) / 2
+    return [1 if x >= threshold else 0 for x in numbers]
+
+def binary_to_ascii(bits):
+    # Join bits into a single string
+    bit_string = ''.join(map(str, bits))
+    # Group bits into chunks of 8
+    binary_list = [bit_string[i:i+8] for i in range(0, len(bit_string), 8)]
+    return ''.join([chr(int(binary, 2)) for binary in binary_list])
 
 if __name__ == "__main__":
     
@@ -196,7 +207,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process a video with Video Seal")
     parser.add_argument("--input", type=str, help="Input video path")
     parser.add_argument("--output_dir", type=str, help="Output directory")
-    parser.add_argument("--do_audio", type=utils.bool_inst, default=False)
     args = parser.parse_args()
 
     main(args)
